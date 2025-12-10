@@ -10,6 +10,19 @@ import config
 from handlers.broadcast import broadcast
 from handlers.check_user import handle_user_status
 from handlers.database import Database
+from threading import Thread
+from flask import Flask
+
+app = Flask('')
+
+@app.route('/')
+def home():
+    return "Bot is alive", 200
+
+def run():
+    app.run(host='0.0.0.0', port=8080)
+
+Thread(target=run).start()
 
 LOG_CHANNEL = config.LOG_CHANNEL
 AUTH_USERS = config.AUTH_USERS
