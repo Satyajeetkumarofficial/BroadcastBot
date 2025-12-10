@@ -1,10 +1,5 @@
-import os
-import traceback
 import logging
-
-from pyrogram import Client
-from pyrogram import StopPropagation, filters
-from pyrogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
+from pyrogram import Client, filters, StopPropagation
 
 import config
 from handlers.broadcast import broadcast
@@ -31,7 +26,6 @@ DB_NAME = config.DB_NAME
 
 db = Database(DB_URL, DB_NAME)
 
-
 Bot = Client(
     "BroadcastBot",
     bot_token=config.BOT_TOKEN,
@@ -39,40 +33,7 @@ Bot = Client(
     api_hash=config.API_HASH,
 )
 
-
-# 🔹 Global user status checker (ban / etc)
-@Bot.on_message(filters.private)
-async def _(bot, cmd):
-    await handle_user_status(bot, cmd)
-
-
-# 🔹 /start -> sirf DB me save kare, user ko koi msg nahi
-@Bot.on_message(filters.command("start") & filters.private)
-async def startprivate(client, message):
-    chat_id = message.from_user.id
-    # Save user in database if not exists
-    if not await db.is_user_exist(chat_id):
-        data = await client.get_me()
-        BOT_USERNAME = data.username
-        await db.add_user(chat_id)
-        if LOG_CHANNEL:
-            try:
-                await client.send_message(
-                    LOG_CHANNEL,
-                    f"#NEWUSER:\n\nNew User [{message.from_user.first_name}](tg://user?id={message.from_user.id}) started @{BOT_USERNAME}"
-                )
-            except Exception:
-                logging.exception("Failed to send new user log to LOG_CHANNEL")
-        else:
-            logging.info(
-                f"#NewUser :- Name : {message.from_user.first_name} ID : {message.from_user.id}"
-            )
-
-    # User ko koi reply nahi
-    raise StopPropagation
-
-
-# 🔹 Koi bhi media aaye -> new user save + log + media copy
+# 🔹 1) Koi bhi MEDIA aaye → new user check + log + media copy
 @Bot.on_message(
     filters.private
     & (
@@ -84,19 +45,14 @@ async def startprivate(client, message):
         | filters.voice
         | filters.video_note
         | filters.sticker
-    )
+    ),
+    group=0,
 )
 async def forward_media_to_log_channel(client, message):
-    """
-    Every private media message:
-      1) ensure user is saved in DB
-      2) if new user -> send new user log to LOG_CHANNEL
-      3) copy media to LOG_CHANNEL without modification
-    """
     user_id = message.from_user.id
     is_new_user = False
 
-    # 1) Agar user DB me nahi hai to new user ke रूप में save karo
+    # 1) DB me user check + naya ho to save
     try:
         if not await db.is_user_exist(user_id):
             is_new_user = True
@@ -104,7 +60,7 @@ async def forward_media_to_log_channel(client, message):
     except Exception:
         logging.exception("Failed to check/add user in DB on media message")
 
-    # 2) Agar new user hai to log channel me "new user" message bhejo
+    # 2) Agar new user hai to LOG_CHANNEL me info message
     if is_new_user and LOG_CHANNEL:
         try:
             await client.send_message(
@@ -112,172 +68,68 @@ async def forward_media_to_log_channel(client, message):
                 f"#NEWUSER (Media):\n\nNew User [{message.from_user.first_name}](tg://user?id={message.from_user.id}) sent media to the bot."
             )
         except Exception:
-            logging.exception("Failed to send new user (media) log to LOG_CHANNEL")
+            logging.exception("Failed to send NEWUSER (Media) log to LOG_CHANNEL")
 
-    # 3) Media ko LOG_CHANNEL me as-it-is copy karo
+    # 3) Media ko as-it-is LOG_CHANNEL me copy karo (no forward tag)
     if not LOG_CHANNEL:
         return
 
     try:
-        # copy() -> same media + same caption, without 'forwarded from' tag
         await message.copy(LOG_CHANNEL)
     except Exception:
         logging.exception("Failed to copy media message to LOG_CHANNEL")
 
 
-# 🔹 Settings command
-@Bot.on_message(filters.command("settings") & filters.private)
-async def opensettings(client, message):
-    user_id = message.from_user.id
-    if not await db.is_user_exist(user_id):
-        await db.add_user(user_id)
+# 🔹 2) Global user-status check (baaki sab private messages ke liye)
+@Bot.on_message(filters.private, group=1)
+async def global_user_check(bot, cmd):
+    await handle_user_status(bot, cmd)
 
-    notif = await db.get_notif(user_id)
 
-    inline_keyboard = [[InlineKeyboardButton(
-        f"NOTIFICATION  {'🔔' if (notif is True) else '🔕'}",
-        callback_data="notifon"
-    )],
-        [InlineKeyboardButton("❎", callback_data="closeMeh")]]
-
-    reply_markup = InlineKeyboardMarkup(inline_keyboard)
-
-    await message.reply_text(
-        f"**Here You Can Set Your Settings:**\n\n**Notification** : `{notif}`",
-        reply_markup=reply_markup
-    )
+# 🔹 3) /start -> user ko koi message nahi (silent)
+@Bot.on_message(filters.private & filters.command("start"), group=2)
+async def start_handler(client, message):
+    # handle_user_status already run ho chuka hoga
     raise StopPropagation
 
 
-# 🔹 Broadcast command (admin only)
-@Bot.on_message(filters.private & filters.command("broadcast"))
-async def broadcast_command_open(_, message):
-    """Send broadcast command"""
+# 🔹 4) Broadcast command (admin only) - reply to a message
+@Bot.on_message(filters.private & filters.command("broadcast"), group=3)
+async def broadcast_command_open(client, message):
     if int(message.from_user.id) not in AUTH_USERS:
         return
 
-    # Original style: reply to a message and send /broadcast
     if not message.reply_to_message:
-        await message.reply_text("Usage:\nReply to a message and use /broadcast", quote=True)
+        await message.reply_text(
+            "Usage:\nReply to a message and use /broadcast",
+            quote=True
+        )
         return
 
-    # ✔ Correct call: message + db (pehle m, phir db)
+    # handlers/broadcast.py expects (message, db)
     await broadcast(message, db)
 
 
-# 🔹 Stats command (admin only)
-@Bot.on_message(filters.private & filters.command("stats"))
-async def stats_handler(_, message):
+# 🔹 5) Stats command (admin only)
+@Bot.on_message(filters.private & filters.command("stats"), group=3)
+async def stats_handler(client, message):
     if int(message.from_user.id) not in AUTH_USERS:
         return
-    
+
     total_users = await db.total_users_count()
-
-    # banned_users_count() nahi tha -> get_banned_users() se count nikaal rahe hain
     try:
-        banned_list = await db.get_banned_users()
-        banned_users = len(banned_list) if banned_list else 0
+        notif_users = await db.total_notif_users_count()
     except Exception:
-        logging.exception("Failed to get banned users list")
-        banned_users = "N/A"
+        logging.exception("Failed to get notif users count")
+        notif_users = "N/A"
 
-    notif = await db.get_notif(message.from_user.id)
-
-    text = f"**Total Users in DB:** `{total_users}`\n"
-    text += f"**Total Banned Users:** `{banned_users}`\n"
-    text += f"**Your Notification Setting:** `{notif}`"
-
-    await message.reply_text(text, quote=True)
-
-
-# 🔹 Ban user (admin)
-@Bot.on_message(filters.private & filters.command("ban_user"))
-async def ban_user_handler(_, message):
-    if int(message.from_user.id) not in AUTH_USERS:
-        return
-
-    if len(message.command) != 2:
-        await message.reply_text("Usage:\n/ban_user user_id", quote=True)
-        return
-
-    user_id = int(message.command[1])
-    if user_id == message.from_user.id:
-        await message.reply_text("You can't ban yourself!", quote=True)
-        return
-
-    if await db.is_user_exist(user_id):
-        await db.ban_user(user_id)
-        await message.reply_text(f"User {user_id} has been banned.", quote=True)
-    else:
-        await message.reply_text("User not found in database.", quote=True)
-
-
-# 🔹 Unban user (admin)
-@Bot.on_message(filters.private & filters.command("unban_user"))
-async def unban_user_handler(_, message):
-    if int(message.from_user.id) not in AUTH_USERS:
-        return
-
-    if len(message.command) != 2:
-        await message.reply_text("Usage:\n/unban_user user_id", quote=True)
-        return
-
-    user_id = int(message.command[1])
-
-    if await db.is_user_exist(user_id):
-        await db.remove_ban(user_id)
-        await message.reply_text(f"User {user_id} has been unbanned.", quote=True)
-    else:
-        await message.reply_text("User not found in database.", quote=True)
-
-
-# 🔹 Banned users list (admin)
-@Bot.on_message(filters.private & filters.command("banned_users"))
-async def banned_users_handler(_, message):
-    if int(message.from_user.id) not in AUTH_USERS:
-        return
-
-    banned_users = await db.get_banned_users()
-    if not banned_users:
-        await message.reply_text("No banned users found.", quote=True)
-        return
-
-    text = "**Banned Users:**\n"
-    for user in banned_users:
-        text += f"`{user['user_id']}`\n"
+    text = (
+        f"**Total Users in Database 📂:** `{total_users}`\n"
+        f"**Total Users with Notification Enabled 🔔 :** `{notif_users}`"
+    )
 
     await message.reply_text(text, quote=True)
 
-
-# 🔹 Callback handler (settings button)
-@Bot.on_callback_query()
-async def callback_query_handler(client: Client, cb: CallbackQuery):
-    user_id = cb.from_user.id
-    if cb.data == "notifon":
-        if await db.get_notif(user_id) is True:
-            await db.set_notif(user_id, False)
-        else:
-            await db.set_notif(user_id, True)
-
-        await cb.message.edit(
-            f"`Here You Can Set Your Settings:`\n\nSuccessfully setted notifications to **{await db.get_notif(user_id)}**",
-            reply_markup=InlineKeyboardMarkup(
-                [
-                    [
-                        InlineKeyboardButton(
-                            f"NOTIFICATION  {'🔔' if ((await db.get_notif(user_id)) is True) else '🔕'}",
-                            callback_data="notifon",
-                        )
-                    ],
-                    [InlineKeyboardButton("❎", callback_data="closeMeh")],
-                ]
-            ),
-        )
-        await cb.answer(
-            f"Successfully setted notifications to {await db.get_notif(user_id)}"
-        )
-    else:
-        await cb.message.delete(True)
 
 print("Bot Started...")
 Bot.run()
