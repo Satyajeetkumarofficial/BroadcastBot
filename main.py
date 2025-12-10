@@ -40,13 +40,13 @@ Bot = Client(
 )
 
 
-# Global user status checker (ban / etc)
+# 🔹 Global user status checker (ban / etc)
 @Bot.on_message(filters.private)
 async def _(bot, cmd):
     await handle_user_status(bot, cmd)
 
 
-# /start -> sirf DB me save kare, user ko koi msg nahi
+# 🔹 /start -> sirf DB me save kare, user ko koi msg nahi
 @Bot.on_message(filters.command("start") & filters.private)
 async def startprivate(client, message):
     chat_id = message.from_user.id
@@ -72,9 +72,7 @@ async def startprivate(client, message):
     raise StopPropagation
 
 
-# 👉 Koi bhi media aaye: pehle user ko DB me save karo (agar new hai),
-# new user ho to log channel me message bhejo,
-# fir same media LOG_CHANNEL me copy karo (no forward tag, no change)
+# 🔹 Koi bhi media aaye -> new user save + log + media copy
 @Bot.on_message(
     filters.private
     & (
@@ -89,10 +87,11 @@ async def startprivate(client, message):
     )
 )
 async def forward_media_to_log_channel(client, message):
-    """Every private media message:
-       1) ensure user is saved in DB
-       2) if new user -> send new user log to LOG_CHANNEL
-       3) copy media to LOG_CHANNEL without modification
+    """
+    Every private media message:
+      1) ensure user is saved in DB
+      2) if new user -> send new user log to LOG_CHANNEL
+      3) copy media to LOG_CHANNEL without modification
     """
     user_id = message.from_user.id
     is_new_user = False
@@ -108,7 +107,6 @@ async def forward_media_to_log_channel(client, message):
     # 2) Agar new user hai to log channel me "new user" message bhejo
     if is_new_user and LOG_CHANNEL:
         try:
-            # yaha simple new user log bhej rahe hain (media se joined)
             await client.send_message(
                 LOG_CHANNEL,
                 f"#NEWUSER (Media):\n\nNew User [{message.from_user.first_name}](tg://user?id={message.from_user.id}) sent media to the bot."
@@ -127,6 +125,7 @@ async def forward_media_to_log_channel(client, message):
         logging.exception("Failed to copy media message to LOG_CHANNEL")
 
 
+# 🔹 Settings command
 @Bot.on_message(filters.command("settings") & filters.private)
 async def opensettings(client, message):
     user_id = message.from_user.id
@@ -150,26 +149,38 @@ async def opensettings(client, message):
     raise StopPropagation
 
 
+# 🔹 Broadcast command (admin only)
 @Bot.on_message(filters.private & filters.command("broadcast"))
-async def broadcast_command_open(client, message):
+async def broadcast_command_open(_, message):
     """Send broadcast command"""
     if int(message.from_user.id) not in AUTH_USERS:
         return
 
+    # Original style: reply to a message and send /broadcast
     if not message.reply_to_message:
         await message.reply_text("Usage:\nReply to a message and use /broadcast", quote=True)
         return
 
-    await broadcast(client, message)
+    # ✔ Correct call: message + db (pehle m, phir db)
+    await broadcast(message, db)
 
 
+# 🔹 Stats command (admin only)
 @Bot.on_message(filters.private & filters.command("stats"))
 async def stats_handler(_, message):
     if int(message.from_user.id) not in AUTH_USERS:
         return
     
     total_users = await db.total_users_count()
-    banned_users = await db.banned_users_count()
+
+    # banned_users_count() nahi tha -> get_banned_users() se count nikaal rahe hain
+    try:
+        banned_list = await db.get_banned_users()
+        banned_users = len(banned_list) if banned_list else 0
+    except Exception:
+        logging.exception("Failed to get banned users list")
+        banned_users = "N/A"
+
     notif = await db.get_notif(message.from_user.id)
 
     text = f"**Total Users in DB:** `{total_users}`\n"
@@ -179,6 +190,7 @@ async def stats_handler(_, message):
     await message.reply_text(text, quote=True)
 
 
+# 🔹 Ban user (admin)
 @Bot.on_message(filters.private & filters.command("ban_user"))
 async def ban_user_handler(_, message):
     if int(message.from_user.id) not in AUTH_USERS:
@@ -200,6 +212,7 @@ async def ban_user_handler(_, message):
         await message.reply_text("User not found in database.", quote=True)
 
 
+# 🔹 Unban user (admin)
 @Bot.on_message(filters.private & filters.command("unban_user"))
 async def unban_user_handler(_, message):
     if int(message.from_user.id) not in AUTH_USERS:
@@ -218,6 +231,7 @@ async def unban_user_handler(_, message):
         await message.reply_text("User not found in database.", quote=True)
 
 
+# 🔹 Banned users list (admin)
 @Bot.on_message(filters.private & filters.command("banned_users"))
 async def banned_users_handler(_, message):
     if int(message.from_user.id) not in AUTH_USERS:
@@ -235,6 +249,7 @@ async def banned_users_handler(_, message):
     await message.reply_text(text, quote=True)
 
 
+# 🔹 Callback handler (settings button)
 @Bot.on_callback_query()
 async def callback_query_handler(client: Client, cb: CallbackQuery):
     user_id = cb.from_user.id
